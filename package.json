@@ -13,6 +13,18 @@
     "coverage": "yarn jest --coverage",
     "lint": "yarn tslint -p tsconfig.json && (yarn eslint index.ts index.test.ts || true)"
   },
+  "keywords": [
+    "passport",
+    "passportjs",
+    "express",
+    "middleware",
+    "authenticator",
+    "authentication",
+    "jwt",
+    "jsonwebtoken",
+    "jsonwebsign",
+    "auth"
+  ],
   "dependencies": {
     "@types/express": "^4.17.5",
     "@types/express-session": "^1.17.0",
