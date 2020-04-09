@@ -1,5 +1,5 @@
 {
-  "name": "express-crendential",
+  "name": "connect-authentication",
   "version": "0.0.1",
   "description": "Simple express credential/authentication middleware",
   "main": "index.js",
