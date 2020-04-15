@@ -1,9 +1,9 @@
 {
   "name": "connect-authentication",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Simple express credential/authentication middleware",
   "main": "index.js",
-  "repository": "git@github.com:tranvansang/connect-authentication.git",
+  "repository": "github:tranvansang/connect-authentication",
   "author": "Tran Sang <info@transang.me>",
   "license": "MIT",
   "scripts": {
