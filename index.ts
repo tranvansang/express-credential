@@ -1,12 +1,14 @@
+/* eslint-disable indent */
+// eslint-disable-next-line import/no-unresolved
 import {Request, RequestHandler} from 'express'
 import ms from 'ms'
 import asyncMiddleware from 'middleware-async'
 import jws, {Algorithm} from 'jws'
 
-
 declare global {
+	// eslint-disable-next-line @typescript-eslint/no-namespace
 	namespace Express {
-		export interface Request {//tslint:disable-line:interface-name
+		export interface Request {
 			user: any
 			login: (user?: any) => Promise<any>
 			logout: () => Promise<void>
@@ -36,10 +38,8 @@ export const makeAuthMiddleware = <IUser, IPayload, IToken>(
 		await req.login()
 	}
 	const payload = await strategy.getPayload(req)
-	if (payload)
-		req.user = (await decoder(payload)) || undefined
-	else
-		req.user = undefined
+	if (payload) req.user = (await decoder(payload)) || undefined
+	else req.user = undefined
 	next()
 })
 
@@ -61,11 +61,11 @@ export const sessionStrategy = <IPayload>(
 	},
 	getPayload: req => {
 		if (req.session![key]) {
-			let {payload, createdAt} = req.session![key]
+			let {createdAt} = req.session![key]
+			const {payload} = req.session![key]
 			if (payload && createdAt) {
 				createdAt = new Date(createdAt)
-				if (!isNaN(createdAt.getTime()) && createdAt.getTime() >= Date.now() - expire)
-					return payload
+				if (!isNaN(createdAt.getTime()) && createdAt.getTime() >= Date.now() - expire) return payload
 			}
 			req.session![key] = undefined
 		}
@@ -83,16 +83,15 @@ export const jwtStrategy = <IPayload>(
 	}
 ): IStrategy<IPayload, string> => ({
 	setPayload: (req, payload) => {
-		if (payload)
-			return jws.sign({
-					header: {alg},
-					payload: JSON.stringify({
-						payload,
-						createdAt: new Date().toISOString()
-					}),
-					secret
-				},
-			)
+		if (payload) return jws.sign({
+				header: {alg},
+				payload: JSON.stringify({
+					payload,
+					createdAt: new Date().toISOString()
+				}),
+				secret
+			},
+		)
 	},
 	getPayload: req => {
 		if (req.get('Authentication')?.startsWith?.('Bearer ')) {
@@ -100,16 +99,22 @@ export const jwtStrategy = <IPayload>(
 			try {
 				if (jws.verify(token, alg, secret)) {
 					const obj = jws.decode(token)
-					if (obj && obj.header?.alg === alg) { //after a positive verification, this conditional branch is always positive
-						let {payload, createdAt} = JSON.parse(obj.payload)
+					if (obj && obj.header?.alg === alg) {
+						//after a positive verification, this conditional branch is always positive
+						let {createdAt} = JSON.parse(obj.payload)
+						const {payload} = JSON.parse(obj.payload)
 						if (payload && createdAt) {
 							createdAt = new Date(createdAt)
-							if (!isNaN(createdAt.getTime()) && createdAt.getTime() >= Date.now() - expire)
-								return payload
+							if (
+								!isNaN(createdAt.getTime())
+								&& createdAt.getTime() >= Date.now() - expire
+							) return payload
 						}
 					}
 				}
-			} catch {} //tslint:disable-line:no-empty
+			} catch {
+				//ignored
+			}
 		}
 	}
 })
