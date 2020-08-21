@@ -1,7 +1,6 @@
 /* eslint-disable indent */
 // eslint-disable-next-line import/no-unresolved
 import {Request, RequestHandler} from 'express'
-import ms from 'ms'
 import asyncMiddleware from 'middleware-async'
 import jws, {Algorithm} from 'jws'
 
@@ -10,32 +9,34 @@ declare global {
 	namespace Express {
 		export interface Request {
 			user: any
-			login: (user?: any) => Promise<any>
+			login: (user: any) => Promise<any>
 			logout: () => Promise<void>
 		}
 	}
 }
 
+type Promisable<T> = T | Promise<T>
+
 export interface IStrategy<IPayload, IToken> {
-	setPayload: (req: Request, payload?: IPayload) => Promise<IToken | void> | IToken | void
-	getPayload: (req: Request) => Promise<IPayload | void>
+	setPayload: (req: Request, payload: IPayload) => Promisable<IToken>
+	getPayload: (req: Request) => Promisable<IPayload | undefined>
+	clearPayload: (req: Request) => Promisable<void>
 }
 
 export const makeAuthMiddleware = <IUser, IPayload, IToken>(
-	encoder: (user: IUser) => Promise<IPayload>,
-	decoder: (payload: IPayload) => Promise<IUser | undefined>,
+	encoder: (user: IUser) => Promisable<IPayload>,
+	decoder: (payload: IPayload) => Promisable<IUser | undefined>,
 	strategy: IStrategy<IPayload, IToken>
 ): RequestHandler => asyncMiddleware(async (req, res, next) => {
-	req.login = async (user?: IUser) => {
+	req.login = async (user?: IUser) => { // set an empty user to logout
 		if (user) {
 			req.user = user
 			return strategy.setPayload(req, await encoder(user))
 		}
-		req.user = undefined
-		await strategy.setPayload(req, undefined)
 	}
 	req.logout = async () => {
-		await req.login()
+		req.user = undefined
+		await strategy.clearPayload(req)
 	}
 	const payload = await strategy.getPayload(req)
 	if (payload) req.user = (await decoder(payload)) || undefined
@@ -44,71 +45,52 @@ export const makeAuthMiddleware = <IUser, IPayload, IToken>(
 })
 
 export const sessionStrategy = <IPayload>(
-	{
-		expire = ms('14 days'),
-		key = '__auth'
-	}: {
-		expire?: number
-		key?: string
-	} = {}
-): IStrategy<IPayload, undefined> => ({
-	setPayload: (req, payload) => {
+	{ key = '__auth' }: { key?: string } = {}
+): IStrategy<IPayload, void> => ({
+	setPayload(req, payload) {
 		if (!payload) req.session![key] = undefined
-		else req.session![key] = {
-			payload,
-			createdAt: new Date().toISOString()
-		}
+		else req.session![key] = payload
 	},
-	getPayload: req => {
-		if (req.session![key]) {
-			let {createdAt} = req.session![key]
-			const {payload} = req.session![key]
-			if (payload && createdAt) {
-				createdAt = new Date(createdAt)
-				if (!isNaN(createdAt.getTime()) && createdAt.getTime() >= Date.now() - expire) return payload
-			}
-			req.session![key] = undefined
-		}
+	getPayload(req) {
+		return req.session![key]
+	},
+	clearPayload(req) {
+		req.session![key] = undefined
 	}
 })
 export const jwtStrategy = <IPayload>(
 	{
 		secret,
 		alg = 'HS256',
-		expire = ms('14 days')
+		ttl,
+		isTokenRevoked,
+		revokeToken
 	}: {
 		secret: string
 		alg?: Algorithm
-		expire?: number
+		ttl: number
+		isTokenRevoked?: (token: string) => Promisable<boolean>
+		revokeToken?: (token: string, expire: Date) => Promisable<void>
 	}
-): IStrategy<IPayload, string> => ({
-	setPayload: (req, payload) => {
-		if (payload) return jws.sign({
-				header: {alg},
-				payload: JSON.stringify({
-					payload,
-					createdAt: new Date().toISOString()
-				}),
-				secret
-			},
-		)
-	},
-	getPayload: req => {
-		if (req.get('Authentication')?.startsWith?.('Bearer ')) {
-			const token = req.get('Authentication')!.replace(/^Bearer /, '')
+): IStrategy<IPayload, string> => {
+	const getPayloadWithTimestamp = async (req: Request) => {
+		const authentication = req.get('Authentication')
+		if (authentication?.startsWith?.('Bearer ')) {
+			const token = authentication.replace(/^Bearer /, '')
 			try {
 				if (jws.verify(token, alg, secret)) {
 					const obj = jws.decode(token)
-					if (obj && obj.header?.alg === alg) {
-						//after a positive verification, this conditional branch is always positive
-						let {createdAt} = JSON.parse(obj.payload)
-						const {payload} = JSON.parse(obj.payload)
-						if (payload && createdAt) {
-							createdAt = new Date(createdAt)
-							if (
-								!isNaN(createdAt.getTime())
-								&& createdAt.getTime() >= Date.now() - expire
-							) return payload
+					if (obj?.header?.alg === alg) {
+						const parsed = JSON.parse(obj.payload)
+						let {createdAt} = parsed
+						const {payload} = parsed
+						createdAt = new Date(createdAt)
+						if (
+							!isNaN(createdAt.getTime())
+							&& createdAt.getTime() >= Date.now() - ttl
+						) {
+							if (await isTokenRevoked?.(token)) return
+							return {payload, createdAt}
 						}
 					}
 				}
@@ -117,4 +99,30 @@ export const jwtStrategy = <IPayload>(
 			}
 		}
 	}
-})
+	return {
+		setPayload(req, payload) {
+			return jws.sign({
+					header: {alg},
+					payload: JSON.stringify({
+						payload,
+						createdAt: Date.now()
+					}),
+					secret
+				},
+			)
+		},
+		async getPayload(req) {
+			return (await getPayloadWithTimestamp(req))?.payload
+		},
+		async clearPayload(req) {
+			if (revokeToken) {
+				const payloadWithTimestamp = await getPayloadWithTimestamp(req)
+				if (payloadWithTimestamp) {
+					const {payload, createdAt} = payloadWithTimestamp
+					const expire = createdAt.getTime() + ttl
+					if (expire > Date.now()) await revokeToken(payload, new Date(expire))
+				}
+			}
+		},
+	}
+}
