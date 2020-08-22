@@ -84,7 +84,7 @@ app.listen(3000, () => console.log('Server is listening at port 3000'))
 
 ## SNS login
 
-Usages with [express-authenticators](https://www.npmjs.com/package/express-authenticators) package.
+Used in combination with the [express-authenticators](https://www.npmjs.com/package/express-authenticators) package.
 
 # API references
 
