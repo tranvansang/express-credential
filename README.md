@@ -11,35 +11,80 @@ Simple, production-level express (connect) middleware.
 - With `yarn`: `yarn add connect-authentication`.
 - With `npm`: `npm install --save connect-authentication`.
 
-# Usage example
+# Sample usages
+
+## With Session Strategy
 
 ```javascript
-import express from 'express'
-import {makeAuthMiddleware, jwtStrategy, sessionStrategy} from 'connect-authentication'
-import session from 'express-session'
-import bodyParser from 'body-parser'
-import asyncMiddleware from 'middleware-async'
+const express = require('express')
+const {makeAuthMiddleware, jwtStrategy, sessionStrategy} = require('connect-authentication')
+const session = require('express-session')
+const bodyParser = require('body-parser')
+const asyncMiddleware = require('middleware-async')
 
 const app = express()
-app.use(bodyParser.json(), session(), makeAuthMiddleware(sessionStrategy())) // in case of jwtStrategy, session() middleware is optional
+app.use(
+    bodyParser.json(),
+    session(),
+    makeAuthMiddleware(sessionStrategy())
+)
 app.post('/login', asyncMiddleware(async (req, res) => {
     const {body: {username, password}} = req
-    const user = await findUser(username)
-    if (user.comparePassword(password)) {
+    const user = await User.findOne({username}).exec()
+    if (user && user.comparePassword(password)) {
         await req.login(user)
-        res.send('login success')//in case of jwtStrategy, response the client with the token returned by req.login().
-    } else res.json('wrong credential')
+        res.status(200).send('login success')
+        return
+    }
+    res.status(401).send('wrong credential')
 }))
-app.get('/user', (req, res) => {
-//in case of jwtStrategy, the client must put the returned token from POST /login, in Authentication header with 'Bearer ' prefix.
-    if (req.user) res.send(JSON.stringify(req.user))
-    else res.send('user not logged in')
+app.get('/me', (req, res) => {
+    if (req.user) res.status(200).json({data: JSON.stringify(req.user)})
+    else res.status(403).json({error: 'please login'})
 })
 app.get('/logout', asyncMiddleware(async (req, res) => {
     await req.logout()
-    res.send('user has been logged out')
+    res.send('logout success')
 }))
+app.listen(3000, () => console.log('Server is listening at port 3000'))
 ```
+
+## With JWT Strategy
+
+```javascript
+const express = require('express')
+const {makeAuthMiddleware, jwtStrategy} = require('connect-authentication')
+const bodyParser = require('body-parser')
+const asyncMiddleware = require('middleware-async')
+
+const app = express()
+app.use(
+    bodyParser.json(),
+    makeAuthMiddleware(sessionStrategy())
+)
+app.post('/login', asyncMiddleware(async (req, res) => {
+    const {body: {username, password}} = req
+    const user = await User.findOne({username}).exec()
+    if (user && user.comparePassword(password)) {
+        res.status(200).json({token: await req.login(user)})
+        return
+    }
+    res.staut(401).json({error: 'wrong credential'})
+}))
+app.get('/me', (req, res) => {
+    if (req.user) res.status(200).json({data: JSON.stringify(req.user)})
+    else res.status(403).json({error: 'please login'})
+})
+app.get('/logout', asyncMiddleware(async (req, res) => {
+    await req.logout()
+    res.status(200).json(true)
+}))
+app.listen(3000, () => console.log('Server is listening at port 3000'))
+```
+
+## SNS login
+
+Usages with [express-authenticators](https://www.npmjs.com/package/express-authenticators) package.
 
 # API references
 

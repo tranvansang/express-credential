@@ -2901,6 +2901,11 @@ flatted@^2.0.0:
   resolved "https://registry.yarnpkg.com/flatted/-/flatted-2.0.2.tgz#4575b21e2bcee7434aa9be662f4b7b5f9c2b5138"
   integrity sha512-r5wGx7YeOwNWNlCA0wQ86zKyDLMQr+/RB8xy74M4hTphfmjlijTSSXGuH8rnvKZnfT9i+75zmd8jcKdMR4O6jA==
 
+flip-promise@^1.0.4:
+  version "1.0.4"
+  resolved "https://registry.yarnpkg.com/flip-promise/-/flip-promise-1.0.4.tgz#d52a2c524b3123feb32742e5fe5e20a1b24f9da2"
+  integrity sha512-8lNmznFfiSXZy+cYxqicJOMFr6jF0EvkIzJduM2zxN52vft7TJalUuJANOrITgd33CqQqjB7rqTJ8UM+pJQdUw==
+
 for-in@^1.0.2:
   version "1.0.2"
   resolved "https://registry.yarnpkg.com/for-in/-/for-in-1.0.2.tgz#81068d295a8142ec0ac726c6e2200c30fb6d5e80"

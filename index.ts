@@ -1,6 +1,6 @@
 /* eslint-disable indent */
 // eslint-disable-next-line import/no-unresolved
-import {Request, RequestHandler} from 'express'
+import type {Request, RequestHandler} from 'express'
 import asyncMiddleware from 'middleware-async'
 import jws, {Algorithm} from 'jws'
 
@@ -73,6 +73,8 @@ export const jwtStrategy = <IPayload>(
 		revokeToken?: (token: string, expire: Date) => Promisable<void>
 	}
 ): IStrategy<IPayload, string> => {
+	if (!secret) throw new Error('Secret is required')
+	if (!ttl) throw new Error('TTL is required')
 	const getPayloadWithTimestamp = async (req: Request) => {
 		const authentication = req.get('Authentication')
 		if (authentication?.startsWith?.('Bearer ')) {
