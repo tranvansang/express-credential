@@ -1,8 +1,9 @@
-/* eslint-disable indent */
-// eslint-disable-next-line import/no-unresolved
 import type {Request, RequestHandler} from 'express'
+// eslint-disable-next-line import/no-unresolved
+import type {CookieOptions} from 'express-serve-static-core'
 import asyncMiddleware from 'middleware-async'
-import jws, {Algorithm} from 'jws'
+import jws, {Algorithm, ALGORITHMS} from 'jws'
+import ms from 'ms'
 
 declare global {
 	// eslint-disable-next-line @typescript-eslint/no-namespace
@@ -15,116 +16,114 @@ declare global {
 	}
 }
 
-type Promisable<T> = T | Promise<T>
+type CanAwait<T> = T | Promise<T>
 
-export interface IStrategy<IPayload, IToken> {
-	setPayload: (req: Request, payload: IPayload) => Promisable<IToken>
-	getPayload: (req: Request) => Promisable<IPayload | undefined>
-	clearPayload: (req: Request) => Promisable<void>
-}
+const allAlgorithms = [...ALGORITHMS, 'none']
+const bearerPrefix = 'Bearer '
 
-export const makeAuthMiddleware = <IUser, IPayload, IToken>(
-	encoder: (user: IUser) => Promisable<IPayload>,
-	decoder: (payload: IPayload) => Promisable<IUser | undefined>,
-	strategy: IStrategy<IPayload, IToken>
-): RequestHandler => asyncMiddleware(async (req, res, next) => {
-	req.login = async (user?: IUser) => { // set an empty user to logout
-		if (user) {
-			req.user = user
-			return strategy.setPayload(req, await encoder(user))
-		}
+export async function extractAndVerify(
+	req: Request,
+	{cookieKey, secret, isTokenRevoked, alg, encoding}: {
+		secret: string | Buffer
+		alg: Algorithm
+		isTokenRevoked?: (token: string) => CanAwait<boolean>
+		cookieKey: string | false
+		encoding: string
 	}
-	req.logout = async () => {
-		req.user = undefined
-		await strategy.clearPayload(req)
-	}
-	const payload = await strategy.getPayload(req)
-	if (payload) req.user = (await decoder(payload)) || undefined
-	else req.user = undefined
-	next()
-})
-
-export const sessionStrategy = <IPayload>(
-	{ key = '__auth' }: { key?: string } = {}
-): IStrategy<IPayload, void> => ({
-	setPayload(req, payload) {
-		if (!payload) req.session![key] = undefined
-		else req.session![key] = payload
-	},
-	getPayload(req) {
-		return req.session![key]
-	},
-	clearPayload(req) {
-		req.session![key] = undefined
-	}
-})
-export const jwtStrategy = <IPayload>(
-	{
-		secret,
-		alg = 'HS256',
-		ttl,
-		isTokenRevoked,
-		revokeToken
-	}: {
-		secret: string
-		alg?: Algorithm
-		ttl: number
-		isTokenRevoked?: (token: string) => Promisable<boolean>
-		revokeToken?: (token: string, expire: Date) => Promisable<void>
-	}
-): IStrategy<IPayload, string> => {
-	if (!secret) throw new Error('Secret is required')
-	if (!ttl) throw new Error('TTL is required')
-	const getPayloadWithTimestamp = async (req: Request) => {
-		const authentication = req.get('Authentication')
-		if (authentication?.startsWith?.('Bearer ')) {
-			const token = authentication.replace(/^Bearer /, '')
-			try {
-				if (jws.verify(token, alg, secret)) {
-					const obj = jws.decode(token)
-					if (obj?.header?.alg === alg) {
-						const parsed = JSON.parse(obj.payload)
-						let {createdAt} = parsed
-						const {payload} = parsed
-						createdAt = new Date(createdAt)
-						if (
-							!isNaN(createdAt.getTime())
-							&& createdAt.getTime() >= Date.now() - ttl
-						) {
-							if (await isTokenRevoked?.(token)) return
-							return {payload, createdAt}
-						}
+) {
+	let token
+	const authentication = req.header('Authentication')
+	if (authentication?.startsWith?.(bearerPrefix)) token = authentication.slice(bearerPrefix.length)
+	else if (cookieKey) token = req.cookies[cookieKey]
+	if (token) {
+		try {
+			if (jws.verify(token, alg, secret)) {
+				// TODO: @types/jws is not up-to-date
+				// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+				// @ts-ignore
+				const {payload, header: {expires}} = jws.decode(token, {encoding})
+				if (expires) {
+					const expiresDate = new Date(expires)
+					if (
+						!isNaN(expiresDate.getTime())
+						&& expiresDate.getTime() >= Date.now()
+					) {
+						if (await isTokenRevoked?.(token)) return
+						return {payload: JSON.parse(payload), expires: expiresDate, token}
 					}
 				}
-			} catch {
-				//ignored
 			}
+		} catch {
+			//ignored
 		}
 	}
-	return {
-		setPayload(req, payload) {
-			return jws.sign({
-					header: {alg},
-					payload: JSON.stringify({
-						payload,
-						createdAt: Date.now()
-					}),
-					secret
-				},
-			)
+}
+
+export default function connectAuthentication<IUser, IPayload>(
+	encode: (user: IUser) => CanAwait<IPayload>,
+	decode: (payload: IPayload) => CanAwait<IUser | undefined>,
+	secret: string | Buffer,
+	{
+		ttl = '1 week',
+		alg = 'HS256',
+		encoding = 'utf8',
+		cookieKey = 'jwt',
+		isTokenRevoked,
+		revokeToken,
+		cookieOptions = {
+			httpOnly: true,
+			sameSite: 'lax',
+			secure: true,
+			signed: false,
 		},
-		async getPayload(req) {
-			return (await getPayloadWithTimestamp(req))?.payload
-		},
-		async clearPayload(req) {
+	}: {
+		ttl?: number | string
+		alg?: Algorithm
+		encoding?: string
+		cookieKey?: string | false
+		isTokenRevoked?: (token: string) => CanAwait<boolean>
+		revokeToken?: (token: string, expire: Date) => CanAwait<void>
+		cookieOptions?: CookieOptions
+	} = {}
+): RequestHandler {
+	if (!secret) throw new Error('Secret is required')
+	if (!allAlgorithms.includes(alg)) throw new Error(`alg must be one of ${allAlgorithms.join(', ')}`)
+	const subOptions = {cookieKey, secret, ttl, isTokenRevoked, alg, encoding}
+	const timeToLive = typeof ttl === 'string' ? ms(ttl) : ttl
+	return asyncMiddleware(async (req, res, next) => {
+		req.login = async (user: IUser) => {
+			req.user = user
+			const expires = Date.now() + timeToLive
+			const token = jws.sign({
+				header: {alg, expires},
+				payload: JSON.stringify(await encode(user)),
+				secret,
+				encoding,
+			})
+			if (cookieKey) res.cookie(cookieKey, token, {
+				...cookieOptions,
+				expires: new Date(expires),
+			})
+			return token
+		}
+		req.logout = async () => {
+			req.user = undefined
+			if (cookieKey) res.clearCookie(cookieKey, {
+				...cookieOptions,
+				expires: undefined,
+				maxAge: undefined
+			})
 			if (revokeToken) {
-				const payloadWithTimestamp = await getPayloadWithTimestamp(req)
-				if (payloadWithTimestamp) {
-					const {payload, createdAt} = payloadWithTimestamp
-					const expire = createdAt.getTime() + ttl
-					if (expire > Date.now()) await revokeToken(payload, new Date(expire))
+				const info = await extractAndVerify(req, subOptions)
+				if (info) {
+					const {expires, token} = info
+					await revokeToken(token, expires)
 				}
 			}
-		},
-	}
+		}
+		req.user = undefined
+		const payload = (await extractAndVerify(req, subOptions))?.payload
+		if (payload) req.user = (await decode(payload)) || undefined
+		next()
+	})
 }

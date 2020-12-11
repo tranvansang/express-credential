@@ -24,8 +24,7 @@
     "module": "commonjs"
   },
   "include": [
-    "index.ts",
-    "node_modules/@types/express-session/index.d.ts"
+    "index.ts"
   ],
   "exclude": []
 }

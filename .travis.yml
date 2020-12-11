@@ -8,5 +8,6 @@ install:
   - yarn
 script:
   - yarn lint
+  - yarn clean
   - yarn coverage
   - yarn codecov

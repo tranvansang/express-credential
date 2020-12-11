@@ -1,195 +1,334 @@
-/* eslint-disable import/no-extraneous-dependencies */
-import flipPromise from 'flip-promise'
-import jws from 'jws'
-import {jwtStrategy, makeAuthMiddleware, sessionStrategy} from './index'
 import {combineToAsync} from 'middleware-async'
+import connectAuthentication, {extractAndVerify} from '.'
 import ms from 'ms'
+import type {Request} from 'express'
+import jws from 'jws'
 
-const payload = {foo: {bar: 'baar'}, fooo: 1}
-const makeJwtReq = (authHeader: string) => ({
-	get: () => authHeader
+const user = {id: '1', name: 'foo'}
+const encode = async u => u.id
+const decode = async id => id === '1' && user
+const cookieKey = 'jwt'
+
+const makeReq = (authHeader: string, cookie) => ({
+	header() {
+		return authHeader
+	},
+	cookies: {[cookieKey]: cookie}
+}) as Request
+
+describe('extract and verify', () => {
+	const options = {
+		alg: 'HS256',
+		secret: '123',
+		cookieKey
+	}
+	const expires = new Date(Date.now() + ms('7 days'))
+	const makeToken = (val, exp, alg, secret) => jws.sign({
+		header: {alg: alg || options.alg, expires: exp?.getTime()},
+		payload: JSON.stringify(val),
+		secret: secret || options.secret,
+		encoding: 'utf8'
+	})
+	const payload = 1
+	const token = makeToken(payload, expires)
+	test('none algorithm', async () => {
+		const tk = jws.sign({
+			header: {alg: 'none'},
+			payload: 1,
+			secret: '123',
+		})
+		const btoa = val => Buffer.from(JSON.stringify(val)).toString('base64').replace(/=/g, '')
+		expect(tk).toBe(`${btoa({alg: 'none'})}.${btoa(1)}.`)
+		expect(tk).toBe('eyJhbGciOiJub25lIn0.MQ.')
+	})
+	const expectedResult = {
+		payload,
+		expires,
+		token
+	}
+	test('normal run', async () => {
+		expect(await extractAndVerify(makeReq(`Bearer ${token}`), options)).toEqual(expectedResult)
+	})
+	describe('token usage place', () => {
+		test('use cookie', async () => {
+			expect(await extractAndVerify(makeReq('bearer 1', token), options)).toEqual(expectedResult)
+		})
+		test('do not use any', async () => {
+			expect(await extractAndVerify(makeReq('bearer 1', token), {...options, cookieKey: false})).toBeUndefined()
+		})
+		test('empty cookie', async () => {
+			expect(await extractAndVerify(makeReq('bearer 1', ''), options)).toBeUndefined()
+		})
+	})
+	describe('token encode/decode', () => {
+		test('invalid token format', async () => {
+			expect(await extractAndVerify(makeReq('Bearer 1'), options)).toBeUndefined()
+		})
+		test('token changes algorithm', async () => {
+			expect(await extractAndVerify(makeReq(`Bearer ${makeToken(payload, expires, 'HS384')}`), options)).toBeUndefined()
+		})
+		test('token changes secret', async () => {
+			expect(await extractAndVerify(makeReq(`Bearer ${makeToken(payload, expires, undefined, '456')}`), options)).toBeUndefined()
+		})
+		test('algorithm changes', async () => {
+			expect(await extractAndVerify(makeReq(`Bearer ${token}`), {
+				options,
+				alg: 'HS384'
+			})).toBeUndefined()
+			expect(await extractAndVerify(makeReq(`Bearer ${token}`), {
+				options,
+				alg: 'none'
+			})).toBeUndefined()
+		})
+		test('secret changes', async () => {
+			expect(await extractAndVerify(makeReq(`Bearer ${token}`), {
+				options,
+				secret: '345'
+			})).toBeUndefined()
+		})
+	})
+	describe('token header validation', () => {
+		test('no expires header', async () => {
+			expect(await extractAndVerify(makeReq(`Bearer ${makeToken(payload)}`), options)).toBeUndefined()
+		})
+		test('invalid date format expires header', async () => {
+			expect(await extractAndVerify(makeReq(`Bearer ${makeToken(payload, {
+				getTime() {
+					return 'invalid date'
+				}
+			})}`), options)).toBeUndefined()
+		})
+		test('expired token', async () => {
+			expect(await extractAndVerify(makeReq(`Bearer ${makeToken(payload, new Date(Date.now() - 1))}`), options)).toBeUndefined()
+		})
+		test('revoked token', async () => {
+			expect(await extractAndVerify(makeReq(`Bearer ${token}`), {
+				...options,
+				isTokenRevoked() {
+					return true
+				}
+			})).toBeUndefined()
+			// async
+			expect(await extractAndVerify(makeReq(`Bearer ${token}`), {
+				...options,
+				async isTokenRevoked() {
+					return true
+				}
+			})).toBeUndefined()
+		})
+		test('non-revoked token', async () => {
+			expect(await extractAndVerify(makeReq(`Bearer ${token}`), {
+				...options,
+				isTokenRevoked() {
+					return false
+				}
+			})).toEqual(expectedResult)
+			expect(await extractAndVerify(makeReq(`Bearer ${token}`), {
+				...options,
+				async isTokenRevoked() {
+					return false
+				}
+			})).toEqual(expectedResult)
+		})
+	})
 })
 
-const ttl = ms('7 days')
-describe('JWT strategy', () => {
-	const secret = 'my secret'
-	const {setPayload, getPayload} = jwtStrategy({secret, ttl})
-	test('basic tests', async () => {
-		const token = await setPayload(payload, payload)
-		expect(typeof token).toBe('string')
-		expect(await getPayload(makeJwtReq(`Bearer ${token}`))).toEqual(payload)
-		expect(await getPayload(makeJwtReq(token))).toBeUndefined()
-		expect(await getPayload(makeJwtReq('Bearer 123'))).toBeUndefined()
-		expect(await getPayload(makeJwtReq('Bearer 123.456'))).toBeUndefined()
-		expect(await getPayload(makeJwtReq('Bearer 123.456.789'))).toBeUndefined()
-	})
-	test('incorrect secret', async () => {
-		const token = jwtStrategy({secret: '123', ttl}).setPayload(undefined, payload)
-		expect(await getPayload(makeJwtReq(`Bearer ${token}`))).toBeUndefined()
-	})
-	test('incorrect algorithm', async () => {
-		const token = jwtStrategy({secret, alg: 'HS384', ttl}).setPayload(undefined, payload)
-		expect(await getPayload(makeJwtReq(`Bearer ${token}`))).toBeUndefined()
-	})
-	test('different expire', async () => {
-		const token = jwtStrategy({secret, ttl}).setPayload(undefined, payload)
-		expect(await getPayload(makeJwtReq(`Bearer ${token}`))).toEqual(payload)
-	})
-	test('expired', async () => {
-		const token = jws.sign({
-			header: {alg: 'HS256'},
-			payload: JSON.stringify({payload, createdAt: new Date(Date.now() - ms('15 days')).toISOString()}),
-			secret
+describe('connect-authentication factory', () => {
+	const secret = '123'
+	describe('middleware', () => {
+		test('default options', async () => {
+			const req = makeReq('')
+			await combineToAsync(connectAuthentication(encode, decode, secret))(req)
+			expect(typeof req.login).toBe('function')
+			expect(typeof req.logout).toBe('function')
+			expect(req.user).toBeUndefined()
 		})
-		expect(await getPayload(makeJwtReq(`Bearer ${token}`))).toBeUndefined()
-	})
-	test('malformed payload', async () => {
-		let token = jws.sign({
-			header: {alg: 'HS256'},
-			payload: 'an invalid json',
-			secret
+		test('option is required', () => {
+			expect(() => connectAuthentication(encode, decode, undefined)).toThrow('Secret is required')
+			expect(() => connectAuthentication(encode, decode, secret, {
+				alg: '1'
+			})).toThrow('alg must be one of HS256, HS384, HS512, RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512, none')
 		})
-		expect(await getPayload(makeJwtReq(`Bearer ${token}`))).toBeUndefined()
-		token = jws.sign({
-			header: {alg: 'HS256'},
-			payload: JSON.stringify({createdAt: new Date()}),
-			secret
-		})
-		expect(await getPayload(makeJwtReq(`Bearer ${token}`))).toBeUndefined()
-		token = jws.sign({
-			header: {alg: 'HS256'},
-			payload: JSON.stringify({payload}),
-			secret
-		})
-		expect(await getPayload(makeJwtReq(`Bearer ${token}`))).toBeUndefined()
-		token = jws.sign({
-			header: {alg: 'HS256'},
-			payload: JSON.stringify({payload, createdAt: 'an invalid date'}),
-			secret
-		})
-		expect(await getPayload(makeJwtReq(`Bearer ${token}`))).toBeUndefined()
 	})
 
-	test('revokeToken', async () => {
-		const revokeToken = jest.fn()
-		const isTokenRevoked = jest.fn()
-		const strategy = jwtStrategy({secret, ttl, revokeToken, isTokenRevoked})
-		const token = await strategy.setPayload(undefined, payload)
-		const now = Date.now()
-		const req = makeJwtReq(`Bearer ${token}`)
-		expect(await getPayload(req)).toEqual(payload)
-		await strategy.clearPayload(req)
-		expect(revokeToken.mock.calls.length).toBe(1)
-		expect(revokeToken.mock.calls[0][0]).toEqual(payload)
-		expect(revokeToken.mock.calls[0][1].getTime()).toBeLessThanOrEqual(now + ttl)
-
-		revokeToken.mockClear()
-		await strategy.clearPayload(makeJwtReq('invalid header'))
-		expect(revokeToken.mock.calls.length).toBe(0)
-	})
-	test('isTokenRevoked', async () => {
-		let revoked
-		const revokeToken = jest.fn()
-		const isTokenRevoked = tk => tk === revoked
-		const strategy = jwtStrategy({secret, ttl, revokeToken, isTokenRevoked})
-		const token = await strategy.setPayload(undefined, payload)
-		const req = makeJwtReq(`Bearer ${token}`)
-		expect(await getPayload(req)).toEqual(payload)
-		revoked = token
-		expect(await strategy.getPayload(req)).toBeUndefined()
-	})
-})
-
-describe('Session Strategy', () => {
-	const {getPayload, setPayload} = sessionStrategy()
-	test('basic', async () => {
-		expect(setPayload({session: {}})).toBeUndefined()
-	})
-	describe('set', () => {
-		test('remove payload', async () => {
-			const req = {session: {__auth: 123}}
-			await setPayload(req)
-			expect(req.session.__auth).toBeUndefined()
+	describe('login', () => {
+		test('returned token can be decoded', async () => {
+			const req = makeReq('')
+			await combineToAsync(connectAuthentication(encode, decode, secret, {cookieKey: false}))(req)
+			const token = await req.login(user)
+			expect(await extractAndVerify(makeReq(`Bearer ${token}`), {
+				secret,
+				alg: 'HS256',
+			})).toEqual({
+				payload: await encode(user),
+				expires: expect.any(Date),
+				token
+			})
+		})
+		test('login with cookie', async () => {
+			const res = {cookie: jest.fn()}
+			const req = makeReq('')
+			const cookieOptions = {dump: 3}
+			await combineToAsync(connectAuthentication(encode, decode, secret, {cookieOptions}))(req, res)
+			const token = await req.login(user)
+			expect(req.user).toBe(user)
+			expect(res.cookie.mock.calls).toEqual([
+				[
+					cookieKey,
+					token,
+					{
+						...cookieOptions,
+						expires: expect.any(Date)
+					}
+				]
+			])
+		})
+		test('login without cookie', async () => {
+			const req = makeReq('')
+			await combineToAsync(connectAuthentication(encode, decode, secret, {cookieKey: false}))(req)
+			await req.login(user)
+			expect(req.user).toBe(user)
 		})
 	})
-	test('set and get', async () => {
-		const req = {session: {}}
-		setPayload(req, payload)
-		expect(await getPayload(req)).toEqual(payload)
-	})
-	describe('get', () => {
-		test('empty session', async () => {
-			expect(await getPayload({session: {}})).toBeUndefined()
+
+	describe('logout', () => {
+		describe('cookie', () => {
+			test('without cookie', async () => {
+				const req = makeReq('')
+				await combineToAsync(connectAuthentication(encode, decode, secret, {cookieKey: false}))(req)
+				await req.logout()
+				expect(req.user).toBeUndefined()
+			})
+			test('with cookie', async () => {
+				const res = {clearCookie: jest.fn()}
+				const req = makeReq('')
+				const cookieOptions = {dump: 3}
+				await combineToAsync(connectAuthentication(
+					encode,
+					decode,
+					secret,
+					{cookieOptions}
+				))(req, res)
+				await req.logout()
+				expect(req.user).toBeUndefined()
+				expect(res.clearCookie.mock.calls).toEqual([
+					[
+						cookieKey,
+						{
+							...cookieOptions,
+							expires: undefined,
+							maxAge: undefined
+						}
+					]
+				])
+			})
 		})
-		test('malformed session', async () => {
-			let req = {session: {__auth: 1}}
-			expect(await getPayload(req)).toBe(1)
-			req = {session: {__auth: payload}}
-			expect(await getPayload(req)).toBe(payload)
+		describe('revoke token', () => {
+			const makeRevokeOptions = revokeToken => ({
+				cookieKey: false, revokeToken
+			})
+			test('no need revoke if token is not set', async () => {
+				const req = makeReq('')
+				const revokeToken = jest.fn()
+				await combineToAsync(connectAuthentication(
+					encode,
+					decode,
+					secret,
+					makeRevokeOptions(revokeToken)
+				))(req)
+				await req.logout()
+				expect(req.user).toBeUndefined()
+				expect(revokeToken.mock.calls.length).toBe(0)
+			})
+			test('no need revoke if token has already expired', async () => {
+				const revokeToken = jest.fn()
+				const token = jws.sign({
+					header: {alg: 'HS256', expires: Date.now() - 1000},
+					payload: JSON.stringify(encode(user)),
+					secret,
+				})
+				const req = makeReq(`Bearer ${token}`)
+				await combineToAsync(connectAuthentication(
+					encode,
+					decode,
+					secret,
+					makeRevokeOptions(revokeToken)
+				))(req)
+				await req.logout()
+				expect(req.user).toBeUndefined()
+				expect(revokeToken.mock.calls.length).toBe(0)
+			})
+			test('normal revoke', async () => {
+				const revokeToken = jest.fn()
+				const token = jws.sign({
+					header: {alg: 'HS256', expires: Date.now() + ms('7 days')},
+					payload: JSON.stringify(encode(user)),
+					secret,
+				})
+				const req = makeReq(`Bearer ${token}`)
+				await combineToAsync(connectAuthentication(
+					encode,
+					decode,
+					secret,
+					makeRevokeOptions(revokeToken)
+				))(req)
+				await req.logout()
+				expect(req.user).toBeUndefined()
+				expect(revokeToken.mock.calls).toEqual([
+					[
+						token,
+						expect.any(Date)
+					]
+				])
+			})
 		})
 	})
-})
-
-describe('Authentication middleware', () => {
-	const user = {id: 'user id', username: 'my username'}
-	const encoder = ({id}) => Promise.resolve(id)
-	const decoder = id => Promise.resolve(id === user.id ? user : undefined)
-	test('with jwt strategy', async () => {
-		await flipPromise((async () => jwtStrategy())())
-		await flipPromise((async () => jwtStrategy({}))())
-		await flipPromise((async () => jwtStrategy({secret: 'a'}))())
-		await flipPromise((async () => jwtStrategy({ttl: 10}))())
-		await jwtStrategy({ttl: 10, secret: 'a'})
-		const auth = makeAuthMiddleware(
-			encoder,
-			decoder,
-			jwtStrategy({secret: 'my secret', ttl})
-		)
-		let req = makeJwtReq('123')
-		await combineToAsync(auth)(req)
-		expect(req.user).toBeUndefined()
-		const token = await req.login(user)
-		expect(req.user).toEqual(user)
-		await req.logout()
-		expect(req.user).toBeUndefined()
-
-		req = makeJwtReq(`Bearer ${token}`)
-		await combineToAsync(auth)(req)
-		expect(req.user).toEqual(user)
-		await req.login(null)
-		expect(req.user).toEqual(user)
-	})
-	test('with session strategy', async () => {
-		const auth = makeAuthMiddleware(
-			encoder,
-			decoder,
-			sessionStrategy()
-		)
-		const req = {session: {}}
-		await combineToAsync(auth)(req)
-		expect(req.user).toBeUndefined()
-		await req.login(user)
-		const session = req.session.__auth
-		expect(req.user).toEqual(user)
-		await req.logout()
-		expect(req.user).toBeUndefined()
-
-		req.session.__auth = session
-		await combineToAsync(auth)(req)
-		expect(req.user).toEqual(user)
-		await req.login(null)
-		expect(req.user).toEqual(user)
-	})
-	test('load different info', async () => {
-		const auth = makeAuthMiddleware(
-			encoder,
-			decoder,
-			sessionStrategy()
-		)
-		const req = {session: {}}
-		await combineToAsync(auth)(req)
-		await req.login({id: 'another id'})
-		await combineToAsync(auth)(req)
-		expect(req.user).toBeUndefined()
+	describe('integration', () => {
+		const options = {
+			cookieKey: false
+		}
+		test('valid token', async () => {
+			let req = makeReq('')
+			await combineToAsync(connectAuthentication(encode, decode, secret, options))(req)
+			expect(req.user).toBeUndefined()
+			const token = await req.login(user)
+			req = makeReq(`Bearer ${token}`)
+			await combineToAsync(connectAuthentication(encode, decode, secret, options))(req)
+			expect(req.user).toBe(user)
+		})
+		test('valid token (string type ttl)', async () => {
+			let req = makeReq('')
+			await combineToAsync(connectAuthentication(encode, decode, secret, {
+				...options,
+				ttl: '1 day'
+			}))(req)
+			expect(req.user).toBeUndefined()
+			const token = await req.login(user)
+			req = makeReq(`Bearer ${token}`)
+			await combineToAsync(connectAuthentication(encode, decode, secret, options))(req)
+			expect(req.user).toBe(user)
+		})
+		test('expired token', async () => {
+			let req = makeReq('')
+			await combineToAsync(connectAuthentication(encode, decode, secret, {
+				...options, ttl: -1000
+			}))(req)
+			expect(req.user).toBeUndefined()
+			const token = await req.login(user)
+			req = makeReq(`Bearer ${token}`)
+			await combineToAsync(connectAuthentication(encode, decode, secret, options))(req)
+			expect(req.user).toBeUndefined()
+		})
+		test('accept string type ttl', async () => {
+			let req = makeReq('')
+			await combineToAsync(connectAuthentication(encode, decode, secret, {
+				...options, ttl: '-1 day'
+			}))(req)
+			expect(req.user).toBeUndefined()
+			const token = await req.login(user)
+			req = makeReq(`Bearer ${token}`)
+			await combineToAsync(connectAuthentication(encode, decode, secret, options))(req)
+			expect(req.user).toBeUndefined()
+		})
 	})
 })
