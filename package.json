@@ -4,7 +4,7 @@
   "description": "Simple express credential/authentication middleware",
   "main": "index.js",
   "repository": "github:tranvansang/connect-authentication",
-  "author": "Tran Sang <tr@nsang.me>",
+  "author": "Sang Tran <t@sang.jp>",
   "license": "MIT",
   "scripts": {
     "clean": "rm -rf index.js index.d.ts coverage",
