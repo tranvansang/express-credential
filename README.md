@@ -1,5 +1,7 @@
 # Authentication Middleware [![Build Status](https://travis-ci.org/tranvansang/connect-authentication.svg?branch=master)](https://travis-ci.org/tranvansang/connect-authentication)
 
+# deprecated
+
 [![NPM](https://nodei.co/npm/connect-authentication.png)](https://nodei.co/npm/connect-authenticationn/)
 
 ![Codecov block](https://codecov.io/gh/tranvansang/connect-authentication/branch/master/graphs/tree.svg)
